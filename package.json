@@ -11,7 +11,8 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "db:init": "node --env-file-if-exists=.env.local scripts/db-init.mjs"
+    "db:init": "node --env-file-if-exists=.env.local scripts/db-init.mjs",
+    "icons": "node scripts/gen-icons.mjs"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
