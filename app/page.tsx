@@ -35,6 +35,8 @@ interface TransactionData {
   appraisal: Appraisal;
   weightGrams: number;
   pricePerGram: number | null;
+  ratePerGram: number | null;
+  qualityMultiplier: number | null;
   totalPrice: number | null;
   currency: string;
   priceStatus: string;
@@ -71,6 +73,8 @@ interface AnalyzeResponse {
   ok: boolean;
   appraisal: Appraisal;
   referencePrice: ReferencePrice | null;
+  ratePerGram: number | null;
+  qualityMultiplier: number | null;
   priceStatus: string;
   error?: string;
 }
@@ -299,6 +303,8 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [appraisal, setAppraisal] = useState<Appraisal | null>(null);
   const [refPerGram, setRefPerGram] = useState<number | null>(null);
+  const [ratePerGram, setRatePerGram] = useState<number | null>(null);
+  const [qualityMult, setQualityMult] = useState<number | null>(null);
   const [priceStatus, setPriceStatus] = useState<string>("not_analyzed");
   const [weight, setWeight] = useState("");
   const [ledger, setLedger] = useState<LedgerBlock[]>([]);
@@ -356,6 +362,8 @@ export default function Home() {
     setError(null);
     setAppraisal(null);
     setRefPerGram(null);
+    setRatePerGram(null);
+    setQualityMult(null);
     setPriceStatus("not_analyzed");
     setLastBlock(null);
   };
@@ -414,6 +422,8 @@ export default function Home() {
       if (!res.ok) throw new Error(data.error ?? "Image analysis failed.");
       setAppraisal(data.appraisal);
       setRefPerGram(data.referencePrice?.pricePerGram ?? null);
+      setRatePerGram(data.ratePerGram ?? null);
+      setQualityMult(data.qualityMultiplier ?? null);
       setPriceStatus(data.priceStatus === "catalogued" ? "catalogued" : "no_reference_price");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Image analysis failed.");
@@ -456,6 +466,8 @@ export default function Home() {
       setImage(null);
       setAppraisal(null);
       setRefPerGram(null);
+      setRatePerGram(null);
+      setQualityMult(null);
       setPriceStatus("not_analyzed");
       setWeight("");
       await loadLedger();
@@ -483,9 +495,9 @@ export default function Home() {
 
   const previewTotal = useMemo(() => {
     const w = Number(weight);
-    if (!Number.isFinite(w) || w <= 0 || refPerGram == null) return null;
-    return refPerGram * w;
-  }, [weight, refPerGram]);
+    if (!Number.isFinite(w) || w <= 0 || ratePerGram == null) return null;
+    return ratePerGram * w;
+  }, [weight, ratePerGram]);
 
   const quality = appraisal ? qualityTone(appraisal.quality) : null;
 
@@ -581,6 +593,8 @@ export default function Home() {
                         setImage(null);
                         setAppraisal(null);
                         setRefPerGram(null);
+                        setRatePerGram(null);
+                        setQualityMult(null);
                         setPriceStatus("not_analyzed");
                       }}
                       className="rounded-md border px-2.5 py-1 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:text-zinc-300 dark:hover:bg-zinc-800"
@@ -602,7 +616,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="mt-3 flex w-full flex-col items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-zinc-300 bg-zinc-50 px-6 py-6 text-center transition-colors hover:border-amber-400 hover:bg-amber-50 dark:border-zinc-700 dark:bg-zinc-800/50 dark:hover:border-amber-500 dark:hover:bg-amber-950/20"
+                  className="mt-3 flex w-full flex-col items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-zinc-300 bg-zinc-50 px-6 py-6 text-center transition-colors hover:border-amber-400 hover:bg-amber-50 dark:border-zinc-700 dark:bg-zinc-800/50 dark:hover:border-amber-500 dark:hover:bg-amber-950/20 lg:py-4"
                 >
                   <svg className="h-7 w-7 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
@@ -618,7 +632,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => setShowCamera(true)}
-                  className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-2 text-sm font-semibold text-zinc-700 transition-colors hover:border-amber-400 hover:bg-amber-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-amber-950/20"
+                  className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-2 text-sm font-semibold text-zinc-700 transition-colors hover:border-amber-400 hover:bg-amber-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-amber-950/20 lg:w-auto lg:self-start lg:px-6"
                 >
                   Take photo with camera
                 </button>
@@ -629,7 +643,7 @@ export default function Home() {
               type="button"
               onClick={handleAnalyze}
               disabled={!image || busy !== null}
-              className="mt-3 w-full rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-40"
+              className="mt-3 w-full rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-40 lg:w-auto lg:min-w-56 lg:self-start lg:px-10"
             >
               {busy === "analyzing" ? "Analyzing with Gemini..." : "Analyze sample with AI"}
             </button>
@@ -665,9 +679,22 @@ export default function Home() {
 
                 <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-800">
                   {priceStatus === "catalogued" && refPerGram !== null ? (
-                    <div>
-                      <span className="text-zinc-500">Reference rate: </span>
-                      <span className="font-semibold">{formatMoney(refPerGram)} / gram</span>
+                    <div className="space-y-1">
+                      <div>
+                        <span className="text-zinc-500">Reference rate: </span>
+                        <span className="font-semibold">{formatMoney(refPerGram)} / gram</span>
+                      </div>
+                      {qualityMult != null && (
+                        <div>
+                          <span className="text-zinc-500">Quality adjustment: </span>
+                          <span className="font-semibold">×{qualityMult.toFixed(2)}</span>
+                          {ratePerGram != null && (
+                            <span className="text-zinc-500">
+                              {" "}→ <span className="font-semibold text-zinc-900 dark:text-zinc-100">{formatMoney(ratePerGram)} / gram</span>
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div>

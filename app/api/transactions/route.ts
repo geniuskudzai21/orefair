@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { appendTransactionForData, getRecentBlocks, verifyChain } from "@/lib/ledger";
-import { computeTotal, findReferencePrice, listReferencePrices } from "@/lib/prices";
+import { adjustedRatePerGram, computeTotal, findReferencePrice, listReferencePrices, qualityMultiplier } from "@/lib/prices";
 import { isDbConfigured } from "@/lib/db";
 import type { Appraisal } from "@/lib/gemini";
 
@@ -79,7 +79,13 @@ export async function POST(request: Request) {
   try {
     const referencePrice = await findReferencePrice(mineralType);
     const pricePerGram = referencePrice?.pricePerGram ?? null;
-    const totalPrice = referencePrice ? computeTotal(referencePrice.pricePerGram, weightGrams) : null;
+    const multiplier =
+      referencePrice != null ? qualityMultiplier(appraisal.quality ?? "", Number(appraisal.qualityScore) || 0) : null;
+    const ratePerGram =
+      referencePrice != null
+        ? adjustedRatePerGram(pricePerGram ?? 0, appraisal.quality ?? "", Number(appraisal.qualityScore) || 0)
+        : null;
+    const totalPrice = ratePerGram != null && pricePerGram != null ? computeTotal(ratePerGram, weightGrams) : null;
 
     const data: Record<string, unknown> = {
       $schema: "orefair.transaction.v1",
@@ -87,6 +93,8 @@ export async function POST(request: Request) {
       appraisal: { ...appraisal, mineralType },
       weightGrams,
       pricePerGram,
+      ratePerGram,
+      qualityMultiplier: multiplier,
       totalPrice,
       currency: referencePrice?.currency ?? "USD",
       priceStatus: referencePrice ? "catalogued" : "no_reference_price",
@@ -103,7 +111,7 @@ export async function POST(request: Request) {
         ok: true,
         transaction: block,
         priceStatus: storedData.priceStatus,
-        price: { pricePerGram, totalPrice },
+        price: { pricePerGram, ratePerGram, qualityMultiplier: multiplier, totalPrice },
       },
       { status: 201 }
     );

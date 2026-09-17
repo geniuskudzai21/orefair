@@ -20,8 +20,13 @@ to a SHA-256 **hash-chained ledger** so the record is tamper-evident.
    `responseSchema`, so the model returns structured JSON:
    mineral type, quality flag, quality score, confidence and notes.
 3. **Weight** - the miner types the sample weight in grams.
-4. **Fair price** - `price = reference_prices.price_per_gram * weight`, looked up by
-   mineral key (`gold`, `platinum`, `chrome`, ...).
+4. **Fair price** - a reference rate (`reference_prices.price_per_gram`) is looked up by
+   mineral key (`gold`, `platinum`, `chrome`, ...) and priced as PAR (an average-quality
+   sample at qualityScore 0.6). Quality then sets a multiplier:
+   `multiplier = 0.25 + 1.25 * qualityScore`, so a clean sample (score 1.0) earns a
+   **x1.50 premium** (e.g. $75/g -> $112.50/g), while heavy contamination drops toward a
+   x0.25 floor. `rate = price_per_gram * multiplier`, `price = rate * weight`. If quality
+   cannot be assessed, the reference rate is used unchanged.
 5. **Ledger** - `POST /api/transactions` appends a block:
    `{ data (jsonb), timestamp, previous_hash, hash }` where
    `hash = sha256(previous_hash + "|" + canonical_json(block))`.

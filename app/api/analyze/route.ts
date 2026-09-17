@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { classifyMineralImage, isGeminiConfigured } from "@/lib/gemini";
-import { findReferencePrice } from "@/lib/prices";
+import { adjustedRatePerGram, findReferencePrice, qualityMultiplier } from "@/lib/prices";
 import { isDbConfigured } from "@/lib/db";
 
 export const runtime = "nodejs";
@@ -74,6 +74,12 @@ export async function POST(request: Request) {
       ok: true,
       appraisal,
       referencePrice,
+      qualityMultiplier: referencePrice
+        ? qualityMultiplier(appraisal.quality, appraisal.qualityScore)
+        : null,
+      ratePerGram: referencePrice
+        ? adjustedRatePerGram(referencePrice.pricePerGram, appraisal.quality, appraisal.qualityScore)
+        : null,
       priceStatus: referencePrice ? "catalogued" : "no_reference_price",
     });
   } catch (err) {
