@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import { Geist, Geist_Mono } from "next/font/google";
 import PwaRegister from "./pwa-register";
+import PwaInstallPrompt from "./pwa-install-prompt";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -44,6 +45,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body className="min-h-full flex flex-col">
         {children}
         <PwaRegister />
+        <PwaInstallPrompt />
       </body>
     </html>
   );
