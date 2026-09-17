@@ -1,10 +1,12 @@
 /* OreFair service worker: precaches the app shell for offline access.
    The image-analyzing and ledger APIs never go into the cache -
-   offline just shows the cached UI with a "could not reach API" notice. */
+   offline just shows the cached UI with a "could not reach API" notice.
 
-const CACHE = "orefair-v1";
+   The HTML document is NOT precached; it is only cached on successful
+   network fetches so a stale shell is never pinned across deployments. */
+
+const CACHE = "orefair-v2";
 const PRECACHE = [
-  "/",
   "/manifest.webmanifest",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
@@ -32,6 +34,12 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
+});
+
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   if (request.method !== "GET") return;
@@ -39,13 +47,15 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
-  // Offline shell for page navigations
+  // Offline shell for page navigations (network-first)
   if (request.mode === "navigate") {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          const copy = response.clone();
-          caches.open(CACHE).then((cache) => cache.put("/", copy));
+          if (response && response.status === 200) {
+            const copy = response.clone();
+            caches.open(CACHE).then((cache) => cache.put("/", copy));
+          }
           return response;
         })
         .catch(() => caches.match("/"))

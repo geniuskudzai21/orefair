@@ -586,7 +586,7 @@ export default function Home() {
                       sha256 {truncateHash(image.imageHash)}
                     </div>
                   </div>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap gap-3">
                     <button
                       type="button"
                       onClick={() => {
