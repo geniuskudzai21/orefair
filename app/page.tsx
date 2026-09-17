@@ -643,9 +643,9 @@ export default function Home() {
               type="button"
               onClick={handleAnalyze}
               disabled={!image || busy !== null}
-              className="mt-3 w-full rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-40 lg:w-auto lg:min-w-56 lg:self-start lg:px-10"
+              className="mt-6 w-full rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-40 lg:w-auto lg:min-w-56 lg:self-start lg:px-10"
             >
-              {busy === "analyzing" ? "Analyzing with Gemini..." : "Analyze sample with AI"}
+              {busy === "analyzing" ? "Analyzing..." : "Analyze sample with AI"}
             </button>
 
             {appraisal && (
