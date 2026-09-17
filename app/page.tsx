@@ -572,45 +572,55 @@ export default function Home() {
             />
 
             {image ? (
-              <div className="mt-3 flex gap-3">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={image.dataUrl}
-                  alt="Ore sample preview"
-                  className="h-24 w-24 shrink-0 rounded-xl border object-cover sm:h-28 sm:w-28"
-                />
-                <div className="flex flex-col justify-between py-0.5">
-                  <div>
-                    <div className="truncate text-sm font-medium">{image.name}</div>
-                    <div className="mt-0.5 font-mono text-[11px] text-zinc-500">
-                      sha256 {truncateHash(image.imageHash)}
+              <>
+                <div className="mt-3 flex gap-3">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={image.dataUrl}
+                    alt="Ore sample preview"
+                    className="h-24 w-24 shrink-0 rounded-xl border object-cover sm:h-28 sm:w-28"
+                  />
+                  <div className="flex flex-col justify-between py-0.5">
+                    <div>
+                      <div className="truncate text-sm font-medium">{image.name}</div>
+                      <div className="mt-0.5 font-mono text-[11px] text-zinc-500">
+                        sha256 {truncateHash(image.imageHash)}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setImage(null);
+                          setAppraisal(null);
+                          setRefPerGram(null);
+                          setRatePerGram(null);
+                          setQualityMult(null);
+                          setPriceStatus("not_analyzed");
+                        }}
+                        className="rounded-md border px-2.5 py-1 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                      >
+                        Replace photo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowCamera(true)}
+                        className="rounded-md border px-2.5 py-1 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                      >
+                        Retake
+                      </button>
                     </div>
                   </div>
-                  <div className="flex flex-wrap gap-3">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setImage(null);
-                        setAppraisal(null);
-                        setRefPerGram(null);
-                        setRatePerGram(null);
-                        setQualityMult(null);
-                        setPriceStatus("not_analyzed");
-                      }}
-                      className="rounded-md border px-2.5 py-1 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                    >
-                      Replace photo
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowCamera(true)}
-                      className="rounded-md border px-2.5 py-1 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                    >
-                      Retake
-                    </button>
-                  </div>
                 </div>
-              </div>
+                <button
+                  type="button"
+                  onClick={handleAnalyze}
+                  disabled={!image || busy !== null}
+                  className="mt-6 w-full rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-40 lg:w-auto lg:min-w-56 lg:self-start lg:px-10"
+                >
+                  {busy === "analyzing" ? "Analyzing..." : "Analyze sample with AI"}
+                </button>
+              </>
             ) : (
               <>
                 <button
@@ -629,24 +639,25 @@ export default function Home() {
                   <span className="text-xs text-zinc-400">or</span>
                   <div className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setShowCamera(true)}
-                  className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-2 text-sm font-semibold text-zinc-700 transition-colors hover:border-amber-400 hover:bg-amber-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-amber-950/20 lg:w-auto lg:self-start lg:px-6"
-                >
-                  Take photo with camera
-                </button>
+                <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-center">
+                  <button
+                    type="button"
+                    onClick={() => setShowCamera(true)}
+                    className="w-full rounded-xl border border-zinc-300 px-4 py-2 text-sm font-semibold text-zinc-700 transition-colors hover:border-amber-400 hover:bg-amber-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-amber-950/20 lg:w-auto lg:mr-3"
+                  >
+                    Take photo with camera
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleAnalyze}
+                    disabled={!image || busy !== null}
+                    className="w-full rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-40 lg:w-auto lg:min-w-56 lg:px-10"
+                  >
+                    {busy === "analyzing" ? "Analyzing..." : "Analyze sample with AI"}
+                  </button>
+                </div>
               </>
             )}
-
-            <button
-              type="button"
-              onClick={handleAnalyze}
-              disabled={!image || busy !== null}
-              className="mt-6 w-full rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-40 lg:w-auto lg:min-w-56 lg:self-start lg:px-10"
-            >
-              {busy === "analyzing" ? "Analyzing..." : "Analyze sample with AI"}
-            </button>
 
             {appraisal && (
               <div className="mt-3 space-y-3 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
