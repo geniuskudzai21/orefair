@@ -12,8 +12,26 @@ export interface Appraisal {
   rawType: string;
 }
 
+function getApiKeys(): string[] {
+  const keys: string[] = [];
+  for (let i = 0; i <= 9; i++) {
+    const envName = i === 0 ? "GEMINI_API_KEY" : `GEMINI_API_KEY_${i}`;
+    const key = process.env[envName]?.trim();
+    if (key) keys.push(key);
+  }
+  return keys;
+}
+
+let keyIndex = 0;
+
+function nextApiKey(keys: string[]): string {
+  const apiKey = keys[keyIndex % keys.length];
+  keyIndex += 1;
+  return apiKey;
+}
+
 export function isGeminiConfigured(): boolean {
-  return Boolean(process.env.GEMINI_API_KEY);
+  return getApiKeys().length > 0;
 }
 
 // Normalize free-text mineral answers to stable catalogue keys.
@@ -97,37 +115,52 @@ export async function classifyMineralImage(
   imageBase64: string,
   mimeType: string
 ): Promise<Appraisal> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
+  const apiKeys = getApiKeys();
+  if (apiKeys.length === 0) {
     throw new Error("GEMINI_API_KEY is not configured. Add it to .env.local");
   }
 
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({
-    model: MODEL_NAME,
-    generationConfig: {
-      responseMimeType: "application/json",
-      responseSchema: RESPONSE_SCHEMA,
-      temperature: 0.2,
-    },
-  });
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < apiKeys.length; attempt++) {
+    const apiKey = nextApiKey(apiKeys);
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({
+      model: MODEL_NAME,
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: RESPONSE_SCHEMA,
+        temperature: 0.2,
+      },
+    });
 
-  const result = await model.generateContent([
-    { text: PROMPT },
-    { inlineData: { mimeType, data: imageBase64 } },
-  ]);
+    try {
+      const result = await model.generateContent([
+        { text: PROMPT },
+        { inlineData: { mimeType, data: imageBase64 } },
+      ]);
 
-  const text = result.response.text();
-  const parsed = JSON.parse(cleanJson(text)) as Record<string, unknown>;
-  const rawType = String(parsed.mineralType ?? "unknown");
+      const text = result.response.text();
+      const parsed = JSON.parse(cleanJson(text)) as Record<string, unknown>;
+      const rawType = String(parsed.mineralType ?? "unknown");
 
-  return {
-    mineralType: normalizeMineralType(rawType),
-    mineralName: String(parsed.mineralName ?? "Unknown mineral").slice(0, 80),
-    quality: String(parsed.quality ?? "cannot assess").slice(0, 40),
-    qualityScore: clampUnit(parsed.qualityScore),
-    confidence: clampUnit(parsed.confidence),
-    notes: String(parsed.notes ?? "").slice(0, 300),
-    rawType,
-  };
+      return {
+        mineralType: normalizeMineralType(rawType),
+        mineralName: String(parsed.mineralName ?? "Unknown mineral").slice(0, 80),
+        quality: String(parsed.quality ?? "cannot assess").slice(0, 40),
+        qualityScore: clampUnit(parsed.qualityScore),
+        confidence: clampUnit(parsed.confidence),
+        notes: String(parsed.notes ?? "").slice(0, 300),
+        rawType,
+      };
+    } catch (err) {
+      const status = (err as { status?: number })?.status;
+      if (status === 429 && attempt < apiKeys.length - 1) {
+        lastError = err instanceof Error ? err : new Error("Image analysis failed.");
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastError ?? new Error("Image analysis failed.");
 }
