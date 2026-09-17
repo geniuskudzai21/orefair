@@ -1,0 +1,775 @@
+"use client";
+
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+} from "react";
+
+interface ReferencePrice {
+  key: string;
+  name: string;
+  pricePerGram: number;
+  currency: string;
+  source: string | null;
+}
+
+interface Appraisal {
+  mineralType: string;
+  mineralName: string;
+  quality: string;
+  qualityScore: number;
+  confidence: number;
+  notes: string;
+  rawType: string;
+}
+
+interface TransactionData {
+  $schema?: string;
+  recordedAt?: string;
+  appraisal: Appraisal;
+  weightGrams: number;
+  pricePerGram: number | null;
+  totalPrice: number | null;
+  currency: string;
+  priceStatus: string;
+  imageHash?: string;
+  originalFilename?: string;
+}
+
+interface LedgerBlock {
+  blockIndex: number;
+  data: TransactionData;
+  timestamp: string;
+  previousHash: string;
+  hash: string;
+}
+
+interface Verification {
+  valid: boolean;
+  blocksChecked: number;
+  headMatches: boolean;
+  firstInvalidBlock: number | null;
+  headHash: string;
+  checkedAt: string;
+}
+
+interface TransactionsResponse {
+  configured: boolean;
+  transactions: LedgerBlock[];
+  referencePrices: ReferencePrice[];
+  verification: Verification | null;
+  error?: string;
+}
+
+interface AnalyzeResponse {
+  ok: boolean;
+  appraisal: Appraisal;
+  referencePrice: ReferencePrice | null;
+  priceStatus: string;
+  error?: string;
+}
+
+const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+
+function formatMoney(value: number): string {
+  return money.format(value);
+}
+
+function truncateHash(hash: string): string {
+  return hash.length > 16 ? `${hash.slice(0, 10)}...${hash.slice(-6)}` : hash;
+}
+
+function bytesToHex(buffer: ArrayBuffer): string {
+  return Array.from(new Uint8Array(buffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function renderToJpeg(file: File, maxDim: number, quality: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        URL.revokeObjectURL(url);
+        reject(new Error("Canvas is not supported in this browser."));
+        return;
+      }
+      ctx.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Could not decode that image file."));
+    };
+    img.src = url;
+  });
+}
+
+async function prepareImage(file: File): Promise<
+  { dataUrl: string; imageHash: string; name: string } | { error: string }
+> {
+  if (file.size > 8 * 1024 * 1024) return { error: "File too large (max 8 MB)." };
+  const originalBytes = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", originalBytes);
+  const dataUrl = await renderToJpeg(file, 1024, 0.85);
+  return { dataUrl, imageHash: bytesToHex(digest), name: file.name };
+}
+
+function qualityTone(quality: string): { label: string; classes: string } {
+  const q = quality.toLowerCase();
+  if (q.includes("clean")) return { label: "Clean sample", classes: "bg-emerald-100 text-emerald-800 border-emerald-200" };
+  if (q.includes("minor")) return { label: "Minor impurities", classes: "bg-amber-100 text-amber-800 border-amber-200" };
+  if (q.includes("high")) return { label: "High visible impurities", classes: "bg-rose-100 text-rose-800 border-rose-200" };
+  return { label: "Cannot assess", classes: "bg-zinc-100 text-zinc-700 border-zinc-200" };
+}
+
+function CameraCapture({
+  onClose,
+  onCapture,
+}: {
+  onClose: () => void;
+  onCapture: (dataUrl: string) => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
+  const [camError, setCamError] = useState<string | null>(null);
+
+  const start = useCallback(async (mode: "environment" | "user") => {
+    if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: mode } },
+        audio: false,
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(() => undefined);
+      }
+      setCamError(null);
+    } catch {
+      setCamError("Camera unavailable or permission denied.");
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await start("environment");
+      if (cancelled) streamRef.current?.getTracks().forEach((t) => t.stop());
+    })();
+    return () => {
+      cancelled = true;
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, [start]);
+
+  const flip = () => {
+    const next = facingMode === "environment" ? "user" : "environment";
+    setFacingMode(next);
+    start(next);
+  };
+
+  const capture = () => {
+    const video = videoRef.current;
+    if (!video || video.videoWidth === 0) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0);
+    onCapture(canvas.toDataURL("image/jpeg", 0.85));
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="flex w-full max-w-md flex-col gap-4 rounded-2xl border bg-white p-5 dark:bg-zinc-900">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="font-bold">{facingMode === "environment" ? "Back camera" : "Front camera"}</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md border px-2.5 py-1 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="relative aspect-square overflow-hidden rounded-xl bg-black">
+          <video ref={videoRef} playsInline muted className="h-full w-full object-cover" />
+          {camError && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/60 p-4 text-center text-sm text-white">
+              {camError}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-center gap-4">
+          <button
+            type="button"
+            onClick={flip}
+            className="rounded-lg border px-3 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          >
+            Flip camera
+          </button>
+          <button
+            type="button"
+            onClick={capture}
+            aria-label="Capture photo"
+            className="flex h-14 w-14 items-center justify-center rounded-full bg-white ring-4 ring-amber-500 focus:outline-none"
+          >
+            <span className="h-10 w-10 rounded-full border-2 border-amber-600 bg-white" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function Home() {
+  const [image, setImage] = useState<{ dataUrl: string; imageHash: string; name: string } | null>(null);
+  const [busy, setBusy] = useState<"analyzing" | "submitting" | "verifying" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [appraisal, setAppraisal] = useState<Appraisal | null>(null);
+  const [refPerGram, setRefPerGram] = useState<number | null>(null);
+  const [priceStatus, setPriceStatus] = useState<string>("not_analyzed");
+  const [weight, setWeight] = useState("");
+  const [ledger, setLedger] = useState<LedgerBlock[]>([]);
+  const [refPrices, setRefPrices] = useState<ReferencePrice[]>([]);
+  const [verification, setVerification] = useState<Verification | null>(null);
+  const [dbConfigured, setDbConfigured] = useState(false);
+  const [lastBlock, setLastBlock] = useState<LedgerBlock | null>(null);
+  const [showCamera, setShowCamera] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function fetchLedger(): Promise<TransactionsResponse | null> {
+    try {
+      const res = await fetch("/api/transactions?limit=30");
+      return (await res.json()) as TransactionsResponse;
+    } catch {
+      return null;
+    }
+  }
+
+  const applyLedgerData = (data: TransactionsResponse | null) => {
+    if (!data) {
+      setDbConfigured(false);
+      setError("Could not reach the API.");
+      return;
+    }
+    if (data.configured) {
+      setLedger(data.transactions ?? []);
+      setRefPrices(data.referencePrices ?? []);
+      setVerification(data.verification ?? null);
+      setDbConfigured(true);
+      setError(null);
+    } else {
+      setDbConfigured(false);
+      setError(data.error ?? null);
+    }
+  };
+
+  const loadLedger = async () => {
+    applyLedgerData(await fetchLedger());
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const data = await fetchLedger();
+      if (!cancelled) applyLedgerData(data);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const resetSampleState = () => {
+    setError(null);
+    setAppraisal(null);
+    setRefPerGram(null);
+    setPriceStatus("not_analyzed");
+    setLastBlock(null);
+  };
+
+  async function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
+    resetSampleState();
+
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("Please choose an image file (JPEG, PNG, WebP).");
+      return;
+    }
+
+    const prepared = await prepareImage(file);
+    if ("error" in prepared) {
+      setError(prepared.error);
+      return;
+    }
+    setImage(prepared);
+    e.target.value = "";
+  }
+
+  async function handleCameraCapture(dataUrl: string) {
+    setShowCamera(false);
+    resetSampleState();
+    try {
+      const blob = await (await fetch(dataUrl)).blob();
+      const file = new File([blob], `camera-${Date.now()}.jpg`, { type: "image/jpeg" });
+      const prepared = await prepareImage(file);
+      if ("error" in prepared) {
+        setError(prepared.error);
+        return;
+      }
+      setImage(prepared);
+    } catch {
+      setError("Could not process the captured photo.");
+    }
+  }
+
+  async function handleAnalyze() {
+    if (!image) {
+      setError("Upload a photo of the sample first.");
+      return;
+    }
+    setBusy("analyzing");
+    setError(null);
+    setLastBlock(null);
+    try {
+      const res = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: image.dataUrl }),
+      });
+      const data: AnalyzeResponse = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Image analysis failed.");
+      setAppraisal(data.appraisal);
+      setRefPerGram(data.referencePrice?.pricePerGram ?? null);
+      setPriceStatus(data.priceStatus === "catalogued" ? "catalogued" : "no_reference_price");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Image analysis failed.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!appraisal) {
+      setError("Analyze the photo first.");
+      return;
+    }
+    const w = Number(weight);
+    if (!Number.isFinite(w) || w <= 0) {
+      setError("Enter a valid weight in grams.");
+      return;
+    }
+    if (!dbConfigured) {
+      setError("Ledger storage is not configured. Add DATABASE_URL to .env.local.");
+      return;
+    }
+    setBusy("submitting");
+    setError(null);
+    try {
+      const res = await fetch("/api/transactions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          appraisal,
+          weightGrams: w,
+          imageHash: image?.imageHash,
+          originalFilename: image?.name,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Could not record the transaction.");
+      setLastBlock(data.transaction as LedgerBlock);
+      setImage(null);
+      setAppraisal(null);
+      setRefPerGram(null);
+      setPriceStatus("not_analyzed");
+      setWeight("");
+      await loadLedger();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Transaction failed.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleVerify() {
+    setBusy("verifying");
+    setError(null);
+    try {
+      const res = await fetch("/api/chain");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Could not verify the chain.");
+      setVerification(data.verification as Verification);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Chain verification failed.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const previewTotal = useMemo(() => {
+    const w = Number(weight);
+    if (!Number.isFinite(w) || w <= 0 || refPerGram == null) return null;
+    return refPerGram * w;
+  }, [weight, refPerGram]);
+
+  const quality = appraisal ? qualityTone(appraisal.quality) : null;
+
+  return (
+    <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-8 px-4 py-10 sm:px-6">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <div className="font-mono text-xs uppercase tracking-widest text-amber-600">hackathon mvp</div>
+          <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl">
+            Ore<span className="text-amber-600">Fair</span>
+          </h1>
+          <p className="mt-2 max-w-lg text-zinc-600 dark:text-zinc-400">
+            AI-powered fair pricing and traceability for artisanal miners. Snap a photo, get an
+            objective appraisal and a tamper-evident, hash-chained price record.
+          </p>
+        </div>
+
+        {verification && (
+          <div className="flex items-center gap-3 rounded-xl border bg-white px-4 py-3 dark:bg-zinc-900">
+            <span
+              className={`h-3 w-3 rounded-full ${
+                verification.valid ? "bg-emerald-500" : "bg-rose-500"
+              }`}
+            />
+            <div className="text-sm">
+              <div className="font-semibold">
+                {verification.valid ? "Chain verified" : "Chain integrity FAILED"}
+              </div>
+              <div className="text-zinc-500">
+                {verification.blocksChecked} block{verification.blocksChecked === 1 ? "" : "s"}
+              </div>
+            </div>
+          </div>
+        )}
+      </header>
+
+      {!dbConfigured && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
+          Ledger storage is not configured. Set DATABASE_URL (Neon Postgres) in .env.local, then run{" "}
+          <code className="rounded bg-black/5 px-1 font-mono text-xs dark:bg-white/10">npm run db:init</code>.
+          Analyze still works once GEMINI_API_KEY is set.
+        </div>
+      )}
+
+      {error && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-100">
+          {error}
+        </div>
+      )}
+
+      <main className="grid gap-6 lg:grid-cols-[1.15fr,0.85fr]">
+        <section className="space-y-6 self-start">
+          <div className="rounded-2xl border bg-white p-6 shadow-sm dark:bg-zinc-900">
+            <h2 className="text-lg font-bold">New sample</h2>
+            <p className="mt-1 text-sm text-zinc-500">Step 1 - photograph the ore sample.</p>
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleFileChange}
+            />
+
+            {image ? (
+              <div className="mt-4 flex gap-4">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={image.dataUrl}
+                  alt="Ore sample preview"
+                  className="h-40 w-40 shrink-0 rounded-xl border object-cover"
+                />
+                <div className="flex flex-col justify-between py-1">
+                  <div>
+                    <div className="truncate text-sm font-medium">{image.name}</div>
+                    <div className="mt-1 font-mono text-xs text-zinc-500">
+                      sha256 {truncateHash(image.imageHash)}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImage(null);
+                      setAppraisal(null);
+                      setRefPerGram(null);
+                      setPriceStatus("not_analyzed");
+                    }}
+                    className="w-fit rounded-md border px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                  >
+                    Replace photo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowCamera(true)}
+                    className="w-fit rounded-md border px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                  >
+                    Retake with camera
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="mt-4 flex w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-300 bg-zinc-50 px-6 py-10 text-center transition-colors hover:border-amber-400 hover:bg-amber-50 dark:border-zinc-700 dark:bg-zinc-800/50 dark:hover:border-amber-500 dark:hover:bg-amber-950/20"
+                >
+                  <svg className="h-8 w-8 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+                  </svg>
+                  <span className="text-sm font-medium">Upload a photo of the sample</span>
+                  <span className="text-xs text-zinc-400">JPEG, PNG or WebP recommended · max 8 MB</span>
+                </button>
+                <div className="mt-3 flex items-center gap-3">
+                  <div className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
+                  <span className="text-xs text-zinc-400">or</span>
+                  <div className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowCamera(true)}
+                  className="mt-3 w-full rounded-xl border border-zinc-300 px-4 py-2.5 text-sm font-semibold text-zinc-700 transition-colors hover:border-amber-400 hover:bg-amber-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-amber-950/20"
+                >
+                  Take photo with camera
+                </button>
+              </>
+            )}
+
+            <button
+              type="button"
+              onClick={handleAnalyze}
+              disabled={!image || busy !== null}
+              className="mt-4 w-full rounded-xl bg-amber-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {busy === "analyzing" ? "Analyzing with Gemini..." : "Analyze sample with AI"}
+            </button>
+
+            {appraisal && (
+              <div className="mt-5 space-y-4 rounded-xl border border-zinc-200 p-4 dark:border-zinc-700">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full bg-zinc-900 px-3 py-1 font-mono text-xs font-semibold uppercase tracking-wide text-amber-400 dark:bg-zinc-800">
+                    {appraisal.mineralType}
+                  </span>
+                  <span className="text-sm font-semibold">{appraisal.mineralName}</span>
+                  {quality && (
+                    <span className={`rounded-full border px-2.5 py-0.5 text-xs font-medium ${quality.classes}`}>
+                      {quality.label}
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-800">
+                    <div className="text-xs text-zinc-500">Identification confidence</div>
+                    <div className="mt-0.5 font-semibold">{Math.round(appraisal.confidence * 100)}%</div>
+                  </div>
+                  <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-800">
+                    <div className="text-xs text-zinc-500">Visual quality score</div>
+                    <div className="mt-0.5 font-semibold">{appraisal.qualityScore.toFixed(2)} / 1.00</div>
+                  </div>
+                </div>
+
+                {appraisal.notes && (
+                  <p className="text-sm text-zinc-600 dark:text-zinc-300">{appraisal.notes}</p>
+                )}
+
+                <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-sm dark:border-zinc-700 dark:bg-zinc-800">
+                  {priceStatus === "catalogued" && refPerGram !== null ? (
+                    <div>
+                      <span className="text-zinc-500">Reference rate: </span>
+                      <span className="font-semibold">{formatMoney(refPerGram)} / gram</span>
+                    </div>
+                  ) : (
+                    <div>
+                      <span className="text-zinc-500">No reference price for </span>
+                      <span className="font-mono font-semibold">{appraisal.mineralType}</span>
+                      <span className="text-zinc-500"> yet. A rate can be added to the reference_prices table.</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit} className="mt-5">
+              <div className="rounded-xl border border-zinc-200 p-4 dark:border-zinc-700">
+                <div className="flex flex-wrap items-end gap-3">
+                  <label className="flex min-w-40 flex-1 flex-col gap-1 text-sm font-medium">
+                    Weight
+                    <div className="relative">
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        min="0.001"
+                        step="any"
+                        placeholder="e.g. 12.5"
+                        value={weight}
+                        onChange={(e) => setWeight(e.target.value)}
+                        className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 pr-12 text-sm focus:border-amber-500 focus:outline-none dark:border-zinc-600 dark:bg-zinc-800"
+                      />
+                      <span className="absolute inset-y-0 right-3 flex items-center text-xs text-zinc-400">grams</span>
+                    </div>
+                  </label>
+                  <div className="flex-1 rounded-lg bg-zinc-50 px-4 py-2 dark:bg-zinc-800">
+                    <div className="text-xs text-zinc-500">Fair price</div>
+                    <div className="text-lg font-bold">
+                      {previewTotal !== null ? formatMoney(previewTotal) : "--"}
+                    </div>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={busy !== null || !appraisal}
+                    className="rounded-xl bg-zinc-900 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
+                  >
+                    {busy === "submitting" ? "Recording..." : "Record to ledger"}
+                  </button>
+                </div>
+              </div>
+            </form>
+
+            {lastBlock && (
+              <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm dark:border-emerald-900 dark:bg-emerald-950">
+                <div className="font-semibold text-emerald-900 dark:text-emerald-200">
+                  Recorded as block #{lastBlock.blockIndex}
+                </div>
+                <div className="mt-1 break-all font-mono text-xs text-emerald-800/80 dark:text-emerald-300/70">
+                  {lastBlock.hash}
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+
+        <aside className="space-y-6 self-start">
+          <div className="rounded-2xl border bg-white p-6 shadow-sm dark:bg-zinc-900">
+            <h2 className="text-lg font-bold">Reference rates</h2>
+            <p className="mt-1 text-sm text-zinc-500">USD per gram, seeded in reference_prices.</p>
+            <div className="mt-3 divide-y divide-zinc-100 dark:divide-zinc-800">
+              {refPrices.length === 0 && (
+                <div className="py-3 text-sm text-zinc-500">No rates loaded.</div>
+              )}
+              {refPrices.map((r) => (
+                <div key={r.key} className="flex items-center justify-between py-2 text-sm">
+                  <div>
+                    <span className="font-mono text-xs font-semibold uppercase">{r.key}</span>
+                    <span className="ml-2 text-zinc-500">{r.name}</span>
+                  </div>
+                  <span className="font-semibold">
+                    {r.pricePerGram >= 1 ? formatMoney(r.pricePerGram) : formatMoney(r.pricePerGram * 1000) + " /kg"}
+                    <span className="font-normal text-zinc-400"> /g</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border bg-white p-6 shadow-sm dark:bg-zinc-900">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-lg font-bold">Ledger</h2>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleVerify}
+                  disabled={!dbConfigured || busy !== null}
+                  className="rounded-lg border px-3 py-1.5 text-xs font-medium hover:bg-zinc-50 disabled:opacity-40 dark:hover:bg-zinc-800"
+                >
+                  {busy === "verifying" ? "Verifying..." : "Verify chain"}
+                </button>
+                <button
+                  type="button"
+                  onClick={loadLedger}
+                  disabled={!dbConfigured || busy !== null}
+                  className="rounded-lg border px-3 py-1.5 text-xs font-medium hover:bg-zinc-50 disabled:opacity-40 dark:hover:bg-zinc-800"
+                >
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-3 overflow-x-auto">
+              <table className="min-w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-700">
+                    <th className="py-2 pr-2 font-medium">Block</th>
+                    <th className="py-2 pr-2 font-medium">Mineral</th>
+                    <th className="py-2 pr-2 font-medium">Wt (g)</th>
+                    <th className="py-2 pr-2 font-medium">Price</th>
+                    <th className="py-2 font-medium">Hash</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                  {ledger.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="py-4 text-zinc-500">
+                        No transactions yet. Analyze a sample to create block #1.
+                      </td>
+                    </tr>
+                  )}
+                  {ledger.map((block) => (
+                    <tr key={block.blockIndex} className="text-xs">
+                      <td className="py-2 pr-2 font-mono font-semibold">#{block.blockIndex}</td>
+                      <td className="py-2 pr-2 font-mono uppercase">{block.data.appraisal.mineralType}</td>
+                      <td className="py-2 pr-2 tabular-nums">{block.data.weightGrams}</td>
+                      <td className="py-2 pr-2 tabular-nums">
+                        {block.data.totalPrice !== null ? formatMoney(block.data.totalPrice) : "--"}
+                      </td>
+                      <td className="py-2 font-mono text-zinc-500" title={block.hash}>
+                        {truncateHash(block.hash)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {verification && (
+              <div className="mt-4 border-t border-zinc-100 pt-3 text-xs text-zinc-500 dark:border-zinc-800">
+                {verification.valid
+                  ? `Verified ${verification.blocksChecked} blocks at ${new Date(verification.checkedAt).toLocaleTimeString()}.`
+                  : `Integrity check FAILED at block #${verification.firstInvalidBlock}.`}
+              </div>
+            )}
+          </div>
+        </aside>
+      </main>
+
+      <footer className="border-t border-zinc-200 pt-6 text-xs text-zinc-400 dark:border-zinc-800">
+        OreFair MVP - Gemini vision classification, reference-priced quotes, and a SHA-256 hash-chained
+        ledger. Every block links to its parent hash, so the record is tamper-evident end to end.
+      </footer>
+
+      {showCamera && <CameraCapture onClose={() => setShowCamera(false)} onCapture={handleCameraCapture} />}
+    </div>
+  );
+}
